@@ -1,5 +1,5 @@
 # PhD-analyses
-This repository contains the R scripts I used to perform my PhD analyses.
+This repository contains the SQL and R scripts I used to perform my PhD analyses.
 
 ## PhD title: 
 Using longitudinal administrative data to characterise mental health problems and substance misuse among women whose children enter care in England
