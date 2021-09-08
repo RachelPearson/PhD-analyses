@@ -9,23 +9,23 @@ Maternal mental health problems and substance misuse are key risk factors for ch
 
 I will initially use unlinked national administrative health and children’s social care data sets before establishing and analysing the first linkage between family court data and electronic mental health records for women with children in care proceedings in England. The main PhD cohort will comprise all women (n = 3226) with children in care proceedings between 2007-2019 in Croydon, Lambeth, Lewisham, and Southwark local authorities, which are served by the South London and Maudsley NHS Mental Health Trust.
 
-## PhD papers:
+## PhD analysis chapters:
 
-### chapter 2:
+### Chapter 2:
 Pearson, R., Jay, M. A., Wijlaars, L., De Stavola, B., Syed, S., Bedston, S., Gilbert, R. (2020).
 Association between health indicators of maternal adversity and the rate of infant entry to local
 authority care in England: a longitudinal ecological study. BMJ Open https://doi.org/10.1136/bmjopen-2019-036564
 
-### chapter 3:
+### Chapter 4:
 Pearson, R., Jewell, A., Wijlaars, L., S., Bedston, S., Finch, E., Broadhurst, K., Downs, J., Gilbert, R. (2020).
 Linking data on women in public family law court proceedings concerning their children to mental health service records in South London. IJPDS https://doi.org/10.23889/ijpds.v6i1.1385
 
-### chapter 4:
+### Chapter 5:
 Pearson, R., Grant, C., Wijlaars, L., Finch, E., Bedston, S., Broadhurst, K., Gilbert, R. (PREPRINT).
 Mental health service use among mothers involved in public family law proceedings: linked data cohort study in South London 2007-2019. OSF Preprints https://doi.org/10.31219/osf.io/htcdy
 
-### chapter 5:
-TBD
+### Chapter 6:
+Trends over time in SLaM referrals, inpatient admissions and outpatient attendances among women with children involved in care proceedings.
 
-### chapter 6:
-TBD
+### Chapter 7:
+Risk of returning to court with a subsequent infant.
