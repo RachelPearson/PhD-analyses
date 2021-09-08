@@ -1,0 +1,431 @@
+#-----------------------#
+# cohort creation macro #
+#-----------------------#
+
+# packages ----
+library(dplyr)
+library(readxl)
+library(readr)
+library(tidyr)
+library(tibble)
+library(lubridate)
+library(forcats)
+library(janitor)
+
+
+#--------------------#
+# factor levels ----
+#--------------------#
+
+la_cat <- c("Croydon","Lambeth", "Lewisham", "Southwark",
+            "Bexley", "Bromley", "Greenwich", "Wandsworth",
+            "Other London", "Other England")
+
+eth_cat <- c("white", "black or black british", "mixed", 
+             "asian or asian british", "other")
+
+fyear_cat <- c("before 2007", "2007/08-2009/10", 
+               "2010/11-2012/13", "2013/14-2015/16", 
+               "2016/17-2018/19")
+
+age_cat <- c("Under 20 years",
+             "20-24 years",
+             "25-29 years",
+             "30 years and over",
+             "Unknown")
+
+get_cohort <- function() {
+#----------------#
+# public data ----
+#----------------#
+
+region_lkup <- read_csv("T:/Rachel Pearson/Projects/19-050 - CRIS-Cafcass analysis/Data/look-up tables/region_to_la_code.csv")
+
+
+
+#-----------------#
+# Cafcass data ----
+#-----------------#
+
+all_cohort_data <- read_xlsx("T:/Rachel Pearson/Projects/19-050 - CRIS-Cafcass analysis/Data/Cafcass cohort + match status/cafcass_slam_matches_and_nonmatches.xlsx",
+                          na = c("", 'NULL')) %>%
+  distinct(person_id, case_id, .keep_all = TRUE) %>% 
+  dplyr::select(-brcid, - service) %>% 
+  clean_names() %>% 
+  dplyr::rename("ePJS_cris_match" = e_pjs_cris_match,
+         "dob_trunc" = truncated_do_b) %>% 
+  left_join(dplyr::select(region_lkup, la_code, region_name), 
+            by = "la_code") %>% 
+  dplyr::mutate(case_fyear = ifelse(month(case_start_date) < 4, 
+                             year(case_start_date) - 1,
+                             year(case_start_date)),
+         match_status = ifelse(iapt_cris_match == 1 | ePJS_cris_match == 1,
+                               1, 0),
+         new_eth_cat = fct_relevel(as.factor(ifelse(ethnicity %in% c("chinese", "other"),
+                                                    "other",
+                                                    ethnicity)),
+                                   eth_cat),
+         CRIS_service = case_when(iapt_cris_match == 1 & ePJS_cris_match == 1 ~ "both",
+                                  iapt_cris_match == 1 & (ePJS_cris_match == 0 | is.na(ePJS_cris_match)) ~ "IAPT only",
+                                  (iapt_cris_match == 0 | is.na(iapt_cris_match)) & ePJS_cris_match == 1 ~ "ePJS only",
+                                  (iapt_cris_match == 0 | is.na(iapt_cris_match))  & (ePJS_cris_match == 0 | is.na(ePJS_cris_match)) ~ "neither"))
+  
+
+#------------------------------------#
+# Duplicates ----
+#------------------------------------#
+duplicate <- all_cohort_data %>% 
+  dplyr::select(person_id, duplicate_person_id, case_start_date) %>% 
+  arrange(person_id, case_start_date) %>% 
+  group_by(person_id) %>% 
+  filter(!is.na(duplicate_person_id) & row_number() == 1) %>% 
+  ungroup() %>% 
+  dplyr::mutate(pair = row_number()) 
+
+
+unique_pairs <- gather(duplicate, 
+                       key = "type", 
+                       value = "id", 
+                       person_id:duplicate_person_id) %>% 
+  arrange(id, case_start_date) %>% 
+  group_by(id) %>% 
+  filter(row_number() == 1 & type == "person_id") %>%  # take smallest ID number where dup ID present
+  ungroup() %>% 
+  dplyr::select(id) %>% 
+  unlist()
+
+duplicate <- duplicate %>% 
+  dplyr::mutate(fl = ifelse(person_id %in% unique_pairs,
+                     1, 0),
+         dup_person_id = ifelse(fl == 1,
+                                duplicate_person_id,
+                                person_id)) %>% 
+  dplyr::select(person_id, dup_person_id) %>% 
+  filter(person_id != dup_person_id)
+
+new_cohort_data <- all_cohort_data %>% 
+  left_join(duplicate, by = "person_id") %>%
+  dplyr::mutate(new_person_id = ifelse(!is.na(dup_person_id),
+                            dup_person_id,
+                            person_id)) %>% 
+  arrange(new_person_id, case_start_date) %>% 
+  group_by(new_person_id) %>% 
+  dplyr::mutate(
+    case_seq = row_number(),
+    case_num = n(),
+    case_num_cat = case_when(case_num == 1 ~ "1",
+                             case_num == 2 ~ "2",
+                             case_num > 2 ~ "3 or more",
+                             TRUE ~ NA_character_),
+    dedup_eth_cat = ifelse(as.character(new_eth_cat) == "missing" & any(as.character(new_eth_cat) != "missing"),
+                            NA, 
+                            as.character(new_eth_cat)),
+    
+    dedup_eth_cat = ifelse(is.na(dedup_eth_cat), 
+                           max(dedup_eth_cat, na.rm = TRUE), 
+                           dedup_eth_cat),
+    
+    dedup_dob = if_else(is.na(dob_trunc) & any(!is.na(dob_trunc)) == TRUE,
+                        max(dob_trunc,na.rm = TRUE), 
+                        dob_trunc)
+  ) %>% 
+  ungroup() %>%
+  dplyr::mutate(dedup_eth_cat = fct_relevel(as.factor(dedup_eth_cat), c(eth_cat, "missing")))
+  
+#------------------------------------#
+# A1. deriving youngest child in case ----
+#------------------------------------#
+
+child_ages <- read_xlsx("T:/Rachel Pearson/Projects/19-050 - CRIS-Cafcass analysis/Data/Cafcass cohort + match status/child_ages_alt.xlsx",
+                        na = c("", 'NULL')) %>% 
+  left_join(dplyr::select(all_cohort_data, case_id, case_start_date, app_s31_end_date, person_id, dob_trunc),
+            by = c("case_id", "mother_id" = "person_id")) %>%
+  left_join(duplicate, by = c("mother_id" = "person_id")) %>%
+  dplyr::mutate(new_mother_id = ifelse(!is.na(dup_person_id),
+                                dup_person_id,
+                                mother_id)) %>%
+  filter(!is.na(case_start_date)) %>% 
+  dplyr::mutate(child_dob_trunc = as.Date(case_when(nchar(as.character(dob_m)) == 2 & !is.na(dob_m) ~
+                                         paste(dob_y, dob_m, "01", sep = "-"),
+                                       nchar(as.character(dob_m)) == 1 & !is.na(dob_m) ~
+                                         paste(dob_y, paste0("0",dob_m), "01", sep = "-"),
+                                       TRUE ~ NA_character_)),
+         age = case_when(!is.na(case_start_date) & !is.na(child_dob_trunc) ~
+                           as.numeric(as.Date(case_start_date) - child_dob_trunc),
+                         TRUE ~ NA_real_),
+         born_in_case = ifelse(age < 0 & 
+                                 (child_dob_trunc <= app_s31_end_date | is.na(app_s31_end_date)) &
+                                 child_dob_trunc >= case_start_date &
+                                 !is.na(child_dob_trunc),
+                               1, 0),
+         age_cat = case_when(age < 0 ~ 1, #unborn
+                             age >= 0 & age < 28 ~ 2, #0-3wks
+                             age >= 28 & age < 52*7 ~ 3, #4-51wks
+                             age >= 52*7 & age < 52*5*7 ~ 4, #1-4yrs
+                             age >= 52*5*7 & age < 52*10*7 ~ 5, #5-9yrs
+                             age >= 52*10*7 & age < 52*16*7 ~ 6, #10-15yrs
+                             age >= 52*16*7 ~ 7, #16yrs +
+                             TRUE ~ NA_real_)) %>% 
+  ungroup() %>%
+  group_by(case_id, new_mother_id) %>% 
+  dplyr::mutate(new_case_yngst_age = min(age, na.rm = TRUE),
+         new_case_yngst_age = ifelse(new_case_yngst_age/365.25 > 24, 
+                                     NA, 
+                                     new_case_yngst_age/365.25),
+         new_case_yngst = min(age_cat, na.rm = TRUE),
+         new_case_yngst = ifelse(new_case_yngst > 7, 
+                                 NA, 
+                                 new_case_yngst),  # derive age of youngest child in case
+         row_num = row_number()) %>% 
+  ungroup()  
+
+
+n_child <- child_ages %>%
+  distinct(new_mother_id, case_id, child_id, .keep_all = TRUE) %>%
+  group_by(new_mother_id, case_id, child_dob_trunc) %>%
+  dplyr::mutate(within_case = row_number()) %>%
+  ungroup %>%
+  distinct(new_mother_id, child_dob_trunc, within_case, .keep_all = TRUE) %>% #remove duplicate children
+  group_by(new_mother_id) %>%
+  dplyr::mutate(n_child = n()) %>%
+  ungroup() %>%
+  distinct(new_mother_id, n_child)
+# rate of twins+ about 0.2 - slightly higher compared with the england ONS birth stats (0.15 births)
+
+
+
+case_youngest <- child_ages %>% 
+  distinct(case_id, new_mother_id, .keep_all = TRUE) %>% 
+  dplyr::select(new_mother_id, case_id, new_case_yngst, new_case_yngst_age)
+
+
+#---------------------------------------------------#
+# A2. deriving age at birth of oldest child in cases ----
+#---------------------------------------------------#
+
+oldest <- child_ages %>%
+  distinct(child_id, new_mother_id, .keep_all = TRUE) %>%
+  group_by(new_mother_id) %>%
+  dplyr::mutate(dob_trunc = if_else(is.na(dob_trunc) & any(!is.na(dob_trunc)) == TRUE,
+                            max(dob_trunc, na.rm = TRUE), dob_trunc)) %>%
+  ungroup() %>%
+  filter(!is.na(new_mother_id) &  !is.na(dob_trunc) & !is.na(child_dob_trunc)) %>% 
+  arrange(new_mother_id, child_dob_trunc) %>% 
+  group_by(new_mother_id) %>% 
+  filter(row_number() == 1) %>% # take child born earliest, by mother
+  ungroup() %>% 
+  dplyr::mutate(age_at_oldest = as.numeric(as.Date(child_dob_trunc) - as.Date(dob_trunc))/365.25) %>%  #derive maternal age at oldest child's birth
+  dplyr::select(new_mother_id, age_at_oldest) 
+
+
+
+#--------------------------------#
+# A3. deriving first case info ----
+#--------------------------------#
+
+first_case <- new_cohort_data %>% 
+  dplyr::select(case_id, new_person_id, starts_with("child_s31_start_age"),
+                child_born_within_case, new_eth_cat, has_father_party,
+                first_case_date = case_start_date, case_seq, case_num, case_num_cat,
+                first_case_age = app_s31_start_age, match_status,
+                la_is_slam, la_name, first_case_fyear = case_fyear, region_name,
+                dob_trunc, dedup_dob, CRIS_service) %>% 
+  filter(case_seq == 1) %>% 
+  left_join(dplyr::select(filter(child_ages, row_num == 1), 
+                          case_id, 
+                          new_case_yngst, new_mother_id),
+            by = c("case_id", "new_person_id" = "new_mother_id")) %>%  # add in derived age of youngest child in first case
+  dplyr::mutate_at(vars(starts_with("child_s31_start_age"), 
+                 child_born_within_case),
+            list(~ifelse(. == 0, NA,
+                         .))) %>% 
+  dplyr::mutate(first_case_mother = ifelse(!is.na(new_case_yngst), 1, 0),
+         og_case_yngst = case_when(child_born_within_case == 1 ~ 1, #var derived from  original age at case variables
+                                   child_s31_start_age_0_3w >= 1 & is.na(child_born_within_case) ~ 2,
+                                   child_s31_start_age_4_52w >= 1 & is.na(child_s31_start_age_0_3w) & is.na(child_born_within_case) ~ 3,
+                                   child_s31_start_age_1_4y >= 1 & is.na(child_s31_start_age_4_52w) & is.na(child_s31_start_age_0_3w) & is.na(child_born_within_case) ~ 4,
+                                   child_s31_start_age_5_9y >= 1 & is.na(child_s31_start_age_1_4y) & is.na(child_s31_start_age_4_52w) & is.na(child_s31_start_age_0_3w) & is.na(child_born_within_case) ~ 5,
+                                   child_s31_start_age_10_15y >= 1 & is.na(child_s31_start_age_5_9y) & is.na(child_s31_start_age_1_4y) & is.na(child_s31_start_age_4_52w) & is.na(child_s31_start_age_0_3w) & is.na(child_born_within_case) ~ 6,
+                                   (child_s31_start_age_16_18y >= 1 | child_s31_start_age_19y_plus >= 1) & is.na(child_s31_start_age_10_15y) & is.na(child_s31_start_age_5_9y) & is.na(child_s31_start_age_1_4y) & is.na(child_s31_start_age_4_52w) & is.na(child_s31_start_age_0_3w) & is.na(child_born_within_case) ~ 7,
+                                   TRUE ~ NA_real_),
+         case_yngst = ifelse(is.na(new_case_yngst) & !is.na(og_case_yngst),
+                             og_case_yngst,
+                             new_case_yngst),
+         first_case_age = ifelse(!is.na(dedup_dob) & is.na(first_case_age),
+                                 as.numeric(first_case_date - dedup_dob)/365.25,
+                                 first_case_age),
+         first_age_cat = fct_relevel(as.factor(case_when(first_case_age < 20 ~ "Under 20 years",
+                                                         #first_case_age >= 16 & first_case_age < 20 ~ "16-19 years",
+                                                         first_case_age >= 20 & first_case_age < 25 ~ "20-24 years",
+                                                         first_case_age >= 25 & first_case_age < 30 ~ "25-29 years",
+                                                         first_case_age >= 30  ~ "30 years and over",
+                                                         TRUE ~ "Unknown")), age_cat),
+         first_la_cat = fct_relevel(as.factor(case_when(la_is_slam == 1 ~ tools::toTitleCase(la_name),
+                                                        la_is_slam != 1 & region_name == "London" ~ "Other London",
+                                                        region_name != "London" ~ "Other England")), la_cat),
+         first_fyear_cat = fct_relevel(as.factor(case_when(first_case_fyear < 2007 ~ "before 2007",
+                                                           first_case_fyear >= 2007 & first_case_fyear < 2010 ~ "2007/08-2009/10",
+                                                           first_case_fyear >= 2010 & first_case_fyear < 2013 ~ "2010/11-2012/13",
+                                                           first_case_fyear >= 2013 & first_case_fyear < 2016 ~ "2013/14-2015/16",
+                                                           first_case_fyear >= 2016 & first_case_fyear < 2019 ~ "2016/17-2018/19")),
+                                       fyear_cat)) %>% 
+  dplyr::select(new_person_id, starts_with("first_"), first_case_mother,
+                first_case_id = case_id)
+
+  
+
+#---------------------------------------------------#
+# A4. derive parter status for mothers who return ----
+#---------------------------------------------------#
+
+# for women who return - who do they return with (fathers)?
+fathers <- read_xlsx("T:/Rachel Pearson/Projects/19-050 - CRIS-Cafcass analysis/Data/Cafcass cohort + match status/mother_father_case.xlsx",
+                            na = c("", 'NULL')) %>% 
+  left_join(duplicate, by = c("mother_id" = "person_id")) %>%
+  dplyr::mutate(new_mother_id = ifelse(!is.na(dup_person_id),
+                                dup_person_id,
+                                mother_id)) %>%
+  arrange(new_mother_id, case_start_date, father_id) %>% 
+  group_by(new_mother_id) %>% 
+  dplyr::mutate(new_case_seq = row_number(),
+         case_num = n()) %>% 
+  ungroup()
+
+partner_status <- filter(fathers, case_num > 1 & new_case_seq == 2) %>% 
+  left_join(dplyr::select(filter(fathers, case_num > 1 & new_case_seq == 1),
+                          new_mother_id, prev_father_id = father_id),
+            by = "new_mother_id") %>% 
+  dplyr::mutate(father_status = case_when(is.na(prev_father_id) | is.na(father_id) ~ "unknown",
+                                   !is.na(prev_father_id) & !is.na(father_id) & prev_father_id == father_id ~ "same partner",
+                                   !is.na(prev_father_id) & !is.na(father_id) & prev_father_id != father_id ~ "new partner")) %>% 
+  group_by(new_mother_id) %>% # in case of > 1 father at first case or return 
+  dplyr::mutate(hier_father_status = case_when(any(father_status == "same partner") ~ "same partner",
+                                        any(father_status == "same partner") == FALSE & 
+                                        any(father_status == "new partner") == TRUE ~ "new partner",
+                                        all(father_status == "unknown") ~ "unknown")) %>% 
+  ungroup() %>% 
+  distinct(new_mother_id, hier_father_status) # retain mother id and returning partner status only
+
+
+# #------------------------------------------------------#
+# # mothers involved in cases as non-mother relatives 
+# #------------------------------------------------------#
+# other_rel <- read_xlsx("T:/Rachel Pearson/Projects/19-050 - CRIS-Cafcass analysis/Data/Cafcass cohort + match status/nonmother_rel.xlsx",
+#                        na = c("", 'NULL')) %>% 
+#   dplyr::select(-child_id) %>% 
+#   distinct()
+
+#--------------------------------------#
+# B1. identify 'good' cases ----
+# i.e. >= 2007/08 and                  #
+# at least 1 child                     #
+# at least 1 adult                     #
+# has a case mother                    #
+#--------------------------------------#
+
+# list of all good case ids:
+good_cases <- all_cohort_data %>% 
+  distinct(case_id, .keep_all = TRUE) %>% 
+  dplyr::select(case_id, case_start_date, child_count, adult_count) %>% 
+  filter(case_start_date > as.Date('2007-03-31') &
+           child_count > 0 &
+           adult_count > 0) %>% 
+  distinct(case_id) %>% 
+  unlist()
+
+#----------------------------------------------------------#
+# B2. identify mothers with multi-mum/multi-dad children ----
+# for at least 1 child in case                             #
+#----------------------------------------------------------#
+
+# children and their associated mother ids:
+child_rel <- read_xlsx("T:/Rachel Pearson/Projects/19-050 - CRIS-Cafcass analysis/Data/Cafcass cohort + match status/child_mother_rel.xlsx",
+                       na = c("", 'NULL')) 
+
+
+# child ids for children who have > 1 mum recorded:
+multi_mother_child <- child_rel %>% 
+  filter(n_mother > 1) %>%
+  distinct(child_id) %>% 
+  unlist()
+
+
+# mother ids who have children with > 1 mums recorded:
+multi_mother_child_mums <- dplyr::select(new_cohort_data, 
+                                         new_person_id, case_id,
+                                         match_status) %>% 
+  distinct(.keep_all = TRUE) %>% 
+  left_join(distinct(child_rel, child_id, case_id),
+            by = "case_id") %>% 
+  group_by(new_person_id) %>% 
+  dplyr::mutate(flag_child = ifelse(child_id %in% multi_mother_child,
+                             1,0),
+         any_multi_child = any(flag_child == 1)) %>%
+  ungroup() %>% 
+  filter(any_multi_child == TRUE) %>% 
+  distinct(new_person_id) %>% 
+  unlist()
+
+
+#---------------------------------------#
+# building the cohort ----
+#---------------------------------------#
+full_cohort <- new_cohort_data %>% 
+  dplyr::select(-duplicate_person_id) %>% 
+  left_join(first_case, by = "new_person_id") %>% 
+  left_join(oldest, by = c("new_person_id" = "new_mother_id")) %>% 
+  left_join(n_child, by = c("new_person_id" = "new_mother_id")) %>% 
+  left_join(case_youngest,
+            by = c("case_id", "new_person_id" = "new_mother_id")) %>% 
+  left_join(partner_status, by = c("new_person_id" = "new_mother_id")) %>%
+  group_by(new_person_id) %>% 
+  dplyr::mutate(good_case_fl = ifelse(case_id %in% good_cases,
+                            1, 0),
+         any_bad_case_fl = as.numeric(any(good_case_fl == 0)),
+         multi_mum_fl = ifelse(new_person_id %in% multi_mother_child_mums,
+                                     1,
+                                     0),
+         # keep_dup_fl = case_when(!is.na(duplicate_person_id) & 
+         #                           person_id %in% unique_pairs ~ 1,
+         #                         !is.na(duplicate_person_id) &
+         #                           !person_id %in% unique_pairs ~ 0,
+         #                         TRUE ~ NA_real_),
+         n_child_cat = case_when(n_child == 1 ~ "1",
+                                 n_child == 2 ~ "2",
+                                 n_child >= 3 & n_child <5 ~ "3-4",
+                                 n_child >= 5 ~ "5 or more",
+                                 TRUE ~ NA_character_),
+         any_case_slam4 = as.numeric(any(tolower(la_name) %in% c("southwark", "lambeth", "lewisham", "croydon")))) %>% 
+  ungroup() %>% 
+  dplyr::mutate(oldest_age_cat = fct_relevel(as.factor(case_when(age_at_oldest < 20 ~ "Under 20 years",
+                                                #age_at_oldest >= 16 & age_at_oldest < 20 ~ "16-19 years",
+                                                age_at_oldest >= 20 & age_at_oldest < 25 ~ "20-24 years",
+                                                age_at_oldest >= 25 & age_at_oldest < 30 ~ "25-29 years",
+                                                age_at_oldest >= 30  ~ "30 years and over",
+                                                is.na(age_at_oldest) | is.na(dedup_dob) ~ "Unknown",
+                                       TRUE ~ NA_character_)), age_cat)) 
+
+  
+return(full_cohort)
+}
+
+full_cohort <- get_cohort()
+
+#------------------------------------------#
+# COHORT CRITERIA ----
+# 1. first case after March 2007           #
+# 2. mother at first case                  #
+# 3. no children with more than one mother #
+# 4. first case is in SLaM core?           #
+
+# interested in first two cases??
+#------------------------------------------#
+# analysis_cohort <- distinct(full_cohort, person_id, .keep_all = TRUE) %>% 
+#     filter(any_bad_case_fl == 0) %>% 
+#     filter(multi_mum_fl == 0) %>% 
+#     filter(first_la_cat %in% c("Southwark",
+#                                "Lambeth",
+#                                "Lewisham",
+#                                "Croydon")) # 2939 # 1977 matches
+  
+  # restricting on quality - bias towards those that link? i.e. those with better qual recording.
