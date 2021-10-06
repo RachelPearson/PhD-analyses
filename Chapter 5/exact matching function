@@ -1,0 +1,57 @@
+# matching algorithm #
+
+# ctrl_data = data of controls
+# case_data = data of cases
+# ratio = ratio of controls to cases (i.e. 1 = 1:1, 2 = 2 control : 1 case etc)
+# matching_vars = string list of variables to perform exact matching on
+# seed = seed for fixing random selection of controls
+
+
+exact_match <- function(case_data, ctrl_data, ratio = 1, matching_vars, seed = 12345) {
+  eval(ctrl_data)
+  eval(case_data)
+  
+  # create the overall matching variable:
+  case_data <- unite(case_data, col = "match_var", matching_vars, sep = "_")
+  ctrl_data <- unite(ctrl_data, col = "match_var", matching_vars, sep = "_", remove = FALSE)
+  
+  n_case_data <- case_data %>%
+    arrange(match_var) %>%
+    group_by(match_var) %>%
+    summarise(n_case = n()) #%>%
+    #unlist()
+  
+  n_ctrl_data <- ctrl_data %>%
+    arrange(match_var) %>%
+    group_by(match_var) %>%
+    summarise(n_ctrl = n()) 
+  
+  ratio_by_group <- left_join(n_case_data, n_ctrl_data, by = "match_var") %>%
+    mutate(ratio = floor(n_ctrl/n_case))
+# return(list(n_ctrl_data, n_case_data, ratio_by_group)) 
+#}
+  message(paste("maximum ratio is",  min(ratio_by_group$ratio), sep = " "))
+  
+  if(min(ratio_by_group$ratio) < ratio){
+    warning(paste("There are not enough controls in each group to satify the chosen ratio. The function has used", 
+                  min(ratio_by_group$ratio), " controls pers case instead.", sep = " "))
+    ratio <- min(ratio_by_group$ratio)
+  }
+  
+#  return(list(n_case_data, n_ctrl_data))
+#}
+  # set seed, split control data set by matching variable and randomly sample:
+  set.seed(seed)
+  
+  split_ctrl_data <- ctrl_data %>%
+    arrange(match_var) %>%
+    filter(match_var %in% n_case_data$match_var) %>%
+    group_split(match_var) %>%
+    map2(., n_case_data$n_case, ~sample_n(.x, size = .y*ratio, replace = FALSE))
+  
+  
+  matched_ctrl_data <- bind_rows(split_ctrl_data)
+  
+  return(matched_ctrl_data)
+
+}
