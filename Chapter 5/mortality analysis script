@@ -1,0 +1,225 @@
+#------------------------#
+# time to death analysis #
+#------------------------#
+
+# packages ----
+library(ggplot2)
+library(survival)
+library(survminer)
+
+#--------------#
+# Get data ----
+#--------------#
+
+matched_ctrl_sample <- ("matched_ctrl_sample.rds")
+cris_dataset <- readRDS("cris_dataset.rds)
+
+#-----------------------------------------------#
+# last proceedings ----
+#-----------------------------------------------#
+
+# combine case data (CRIS-Cafcass cohort) and control data (matched controls) together:
+combine_dat <- map(list(mutate(cris_dataset, person_id = as.character(person_id)),
+                        rename(matched_ctrl_sample, person_id = new_id)), 
+                   ~dplyr::select(., person_id, earliest_slam, 
+                                  study_dob, contains("dod"), starts_with("first"),
+                                  contains("age_at_first_slam"), age_died, died)) %>%
+  bind_rows(.id = "cohort") %>%
+  mutate(new_age_cat = factor(cut(age_at_first_slam, 
+                                  breaks = c(0, 24, 34, 44, 100), 
+                                  labels = c("0-24 yrs",
+                                             "25-34 yrs",
+                                             "35-44 yrs",
+                                             "45+ yrs")),
+                              levels = c("0-24 yrs",
+                                         "25-34 yrs",
+                                         "35-44 yrs",
+                                         "45+ yrs")),
+         earliest_slam = as.Date(earliest_slam, format = "%Y-%m-%d", origin = "1970-01-01"),
+         dod_trunc = case_when(!is.na(dod_trunc) ~ dod_trunc,
+                               !is.na(dod_trunc_epjs) ~ dod_trunc_epjs,
+                               !is.na(dod_trunc_iapt) ~ dod_trunc_iapt),
+         T1 = ifelse(died == 1, 
+                                as.numeric(difftime(dod_trunc, as_date(earliest_slam), units = "days")), 
+                                as.numeric(difftime(as_date("2020-03-31"), as_date(earliest_slam), units = "days"))),
+         TA = ifelse(cohort == 1 & as_date(first_case_start) > as_date(earliest_slam),
+                     as.numeric(difftime(as_date(first_case_start), as_date(earliest_slam), units = "days")),
+                     T1),
+         delta1 = died,
+         deltaA = ifelse(cohort == 1 & TA != T1, 1, 0),
+         first_slam_year = year(earliest_slam),
+         case = ifelse(cohort == 1, 1, 0),
+         id = 1000000 + row_number()
+         ) %>%
+  filter(T1 >= 0)
+
+
+#------------------------------------------#
+# Set up data set for TDC using tmerge ----
+#------------------------------------------#
+td_dat <-
+  tmerge(
+    data1 = dplyr::select(combine_dat, person_id, T1, delta1, age_at_first_slam, case),
+    data2 = dplyr::select(combine_dat, person_id, T1, delta1, TA, deltaA, age_at_first_slam, case),
+    id = person_id,
+    death = event(T1, delta1),
+    cafcass = tdc(TA)
+  ) %>%
+  add_count(person_id) %>%
+  mutate(cafcass = ifelse(case == 1 & n == 1, 1, cafcass))
+
+
+#-----------------------------------------------#
+# time-dependent covariate - cox regression ----
+#-----------------------------------------------#
+tdc_mod <- 
+  coxph(
+    Surv(time = tstart, time2 = tstop, event = death) ~ cafcass + age_at_first_slam,
+    data = td_dat 
+  )
+
+tdc_mod_results <- broom::tidy(tdc_mod, exponentiate = TRUE)
+
+
+# quadratic term for age covariate:
+td_dat$age_at_first_slam2 <- td_dat$age_at_first_slam^2
+
+
+# non-linear age:
+tdc_nonl_mod <- 
+  coxph(
+    Surv(time = tstart, time2 = tstop, event = death) ~ cafcass + age_at_first_slam + age_at_first_slam2,
+    data = td_dat 
+  )
+
+tdc_nonl_mod_results <- broom::tidy(tdc_nonl_mod, exponentiate = TRUE)
+
+# fit model with age modelled using natural cubic splines:
+tdc_spl_mod <- 
+  coxph(
+    Surv(time = tstart, time2 = tstop, event = death) ~ cafcass + splines::ns(age_at_first_slam, df = 3),
+    data = td_dat 
+  )
+
+tdc_spl_mod_results <- broom::tidy(tdc_spl_mod, exponentiate = TRUE)
+
+
+# visually assess non-lineariy
+ggcoxfunctional(Surv(time = tstart, time2 = tstop, event = death) ~ age_at_first_slam + age_at_first_slam2,
+                data = td_dat)
+
+anova(tdc_mod, tdc_nonl_mod)
+
+# check for influential observations
+ggcoxdiagnostics(tdc_mod, type = "dfbetas", linear.predictions = FALSE)
+
+
+# check schoenfield residual plot for PH assumption:
+ggcoxzph(fit = cox.zph(tdc_mod))
+
+#----------------------------------------------------------------#
+# Cox model (not taking into account immortal time -bias) ----
+#----------------------------------------------------------------#
+mod <- 
+  coxph(
+    Surv(time = T1, event = delta1) ~ case + age_at_first_slam, # no TDC
+    data = distinct(td_dat, person_id, T1, delta1, age_at_first_slam, case)
+  )
+
+mod_results <- broom::tidy(mod, exponentiate = TRUE) # underestimates risk
+
+write_csv(bind_rows(tdc_mod_results,
+                    mod_results,
+                    .id = "model"), "Outputs/Core4/descriptive/surv_results.csv")
+
+
+# global test for PH assumption ----
+cox.zph(tdc_mod)
+cox.zph(mod)
+
+#-----------------------------------------------------------------------------------#
+# calculated estimate 5-year and 10-year mortality rates for cases and controls ----
+#-----------------------------------------------------------------------------------#
+# estimate rates for women aged at 25%, median and 75% quantile of age (among cases):
+ages <- round(quantile(cris_dataset$age_at_first_slam, c(0.25, 0.5, 0.75)))
+test_dat <- data.frame(cafcass = as.factor(c(0,1,0,1,0,1)),
+                       age_at_first_slam = c(ages[[1]], ages[[1]],ages[[2]],ages[[2]],ages[[3]],ages[[3]]))
+
+# use Aalen-Johnson method and log-log CIs:
+surv_tm_dat <- survfit(tdc_mod, newdata = test_dat, type = "aalen",
+                       se.fit = TRUE, conf.type = "log-log", censor = TRUE)
+
+expected <- summary(surv_tm_dat, time = c(365.25*5, 365.25*10))
+
+expected_dat <- list(surv =  as.data.frame(expected$surv) %>% rownames_to_column(var = "row") %>% gather(key = "case", value = "surv", -row),
+                           surv_ll = as.data.frame(expected$lower) %>% rownames_to_column(var = "row") %>% gather(key = "case", value = "surv_ll", -row),
+                           surv_ul = as.data.frame(expected$upper) %>% rownames_to_column(var = "row") %>% gather(key = "case", value = "surv_ul", -row)) %>%
+  reduce(left_join, by = c("case", "row")) %>%
+  mutate_at(vars(starts_with("surv")), 
+                 list(cuminc = ~round((1 - .)*100, 3))) %>%
+  mutate(cat = case_when(case == 1 ~ paste0(ages[[1]], "_0"),
+                         case == 2 ~ paste0(ages[[1]], "_1"),
+                         case == 3 ~ paste0(ages[[2]], "_0"),
+                         case == 4 ~ paste0(ages[[2]], "_1"),
+                         case == 5 ~ paste0(ages[[3]], "_0"),
+                         case == 6 ~ paste0(ages[[3]], "_1")),
+         time = ifelse(row == 1, 5, 10)) %>%
+  dplyr::select(time, cat, starts_with("surv"), ends_with("cuminc"))
+
+write_csv(expected_dat, "Outputs/Core4/descriptive/exp_mortality_rates.csv")
+
+
+#-------------------------------------------------------------------------------#
+# Plot estimated mortality rates (up to 10 year) at median age (among cases) ----
+#-------------------------------------------------------------------------------#
+
+# new data for estimating rates:
+plot_dat <- data.frame(cafcass = as.factor(c(0,1)),
+                       age_at_first_slam = ages[[2]])
+
+# estimating rates based on TDC model:
+surv_plot_dat <- survfit(tdc_mod, newdata = plot_dat, type = "aalen",
+                       se.fit = TRUE, conf.type = "log-log", censor = TRUE)
+
+expected_plot_dat <- summary(surv_plot_dat, time = seq(0, 365.25*12, 1))
+
+expected_plot_dat <- list(surv = as.data.frame(expected_plot_dat$surv) %>% rownames_to_column(var = "row") %>% gather(key = "case", value = "surv", -row),
+                               surv_ll = as.data.frame(expected_plot_dat$lower) %>% rownames_to_column(var = "row") %>% gather(key = "case", value = "surv_ll", -row),
+                               surv_ul = as.data.frame(expected_plot_dat$upper) %>% rownames_to_column(var = "row") %>% gather(key = "case", value = "surv_ul", -row)) %>%
+  reduce(left_join, by = c("row", "case")) %>%
+  mutate_at(vars(starts_with("surv")), list(~round((1 - .)*100, 4))) %>%
+  mutate(time = as.numeric(row) - 1)
+
+# plot rates:
+ggplot(data = expected_plot_dat, aes(x = time, y = surv, 
+                                     group    = fct_rev(case), 
+                                     colour   = fct_rev(case),
+                                     fill     = fct_rev(case),
+                                     linetype = fct_rev(case))) +
+  geom_line(size = 1) +
+  geom_ribbon(aes(ymin = surv_ul, ymax = surv_ll), alpha = 0.2, colour = "white") +
+  #geom_line(aes(y = surv_ul), linetype = "dashed") +
+  theme_classic() +
+  scale_colour_manual("",
+                      values = c("#1c9099", "#a6bddb"), 
+                      labels = c("women in care proceedings", "matched controls")) +
+  scale_linetype_manual("",
+                      values = c("solid", "dashed"), 
+                      labels = c("women in care proceedings", "matched controls")) +
+  scale_fill_manual("",
+                        values = c("#1c9099", "#a6bddb"), 
+                        labels = c("women in care proceedings", "matched controls")) +
+  scale_y_continuous("Estimated\ncumulative\nincidence",
+                     breaks = seq(0,5,1), labels = paste0(seq(0,5,1), "%")) +
+  scale_x_continuous("\nTime since first SLaM contact (years)", breaks = seq(0, 365.25*12, 365.25),
+                     labels = seq(0,12,1)) +
+  theme(axis.text = element_text(size = 14),
+        axis.title = element_text(size = 14),
+        axis.title.y = element_text(size = 14, angle = 0, vjust = 0.5),
+        legend.text = element_text(size = 14),
+        legend.position = c(0.35, 0.85),
+        legend.key.width = unit(1.7, "cm"))
+
+ggsave("Outputs/Core4/descriptive/exp_mortality_rates.png",
+       units = "in", width = 7, height = 5, dpi = "print")
+
