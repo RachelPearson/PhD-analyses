@@ -1,0 +1,36 @@
+
+# data_list = list() with two items: 1) data set of cases, 2) data set of controls
+# event_var = variable on which to produce age standardised rates
+
+
+# begin function:
+std_rates <- function(data_list, event_var) {
+  eval(data_list) 
+  
+  event_var <- sym(event_var)
+  event_var <- enquo(event_var)
+  
+  rate_dat <- map_df(data_list, ~dplyr::select(., new_id, group, age_at_first_slam_cat, !!event_var))
+  
+  rate_by_age <- rate_dat %>%
+    group_by(group, age_at_first_slam_cat) %>%
+    summarise(n = n(),
+              n_event = sum(!!event_var == 1, na.rm = TRUE)) %>%
+    filter(!is.na(age_at_first_slam_cat)) %>%
+    group_by(group) %>%
+    mutate(rate = n_event/(n/100),
+           pct = n/sum(n, na.rm = T)) %>%
+    ungroup()
+  
+  age_std_rates <- rate_by_age %>%
+    group_by(age_at_first_slam_cat) %>%
+    mutate(overall_pct = ifelse(group == "Cafcass women", pct, 0), # set Cafcass women as reference group
+           overall_pct = max(overall_pct)) %>%
+    mutate(asr = rate * overall_pct) %>%
+    group_by(group) %>%
+    summarise(asr = sum(asr, na.rm = TRUE)) %>%
+    ungroup()
+  
+  return(age_std_rates)
+  
+}
