@@ -22,7 +22,7 @@ library(tableone)
 #------------------------------#
 # get Cafcass SLaM cohort ----
 #------------------------------#
-source("T:/Rachel Pearson/Projects/19-050 - CRIS-Cafcass analysis/R scripts/creating cohorts.R")
+source("R scripts/creating cohorts.R")
 
 
 # get ONS data on population sizes ----
@@ -48,7 +48,6 @@ la_pop <- read_csv("T:/Rachel Pearson/Projects/19-050 - CRIS-Cafcass analysis/Da
 # how many women without extra dups:
 distinct(full_cohort, new_person_id) %>%
   nrow()
-#5429
 
 # get subset of cohort with a case in core 4 borough and case >= April 2007:
 core4_cohort <- filter(full_cohort, any_case_slam4 == 1) %>%
@@ -82,9 +81,6 @@ mhealth_prev <- distinct(core4_cohort, new_person_id, match_status, .keep_all = 
          ul = ifelse(match_status == 1, (n + lag(ul, 1))*100/(n + lag(n,1)), ul),
          act = ifelse(match_status == 1, n*100/(n + lag(n,1)), NA)) 
 
-write_csv(mhealth_prev,
-          "T:/Rachel Pearson/Projects/19-050 - CRIS-Cafcass analysis/Outputs/linkage paper/prevalence overall.csv")  
-
 
 # overall by borough:
 mhealth_prev_by_la <- distinct(core4_cohort, new_person_id, la_name, .keep_all = TRUE) %>%
@@ -104,16 +100,10 @@ mhealth_prev_by_la <- distinct(core4_cohort, new_person_id, la_name, .keep_all =
          act = ifelse(match_status == 1, n*100/(n + lag(n,1)), NA)) 
 
 
-write_csv(mhealth_prev_by_la,
-          "T:/Rachel Pearson/Projects/19-050 - CRIS-Cafcass analysis/Outputs/linkage paper/la_prevalence_plots_no_yr.csv")  
-
 # missingnes among unlinked:
 unlinked <- bind_rows(filter(mhealth_prev_by_la, match_status == 0), filter(mhealth_prev, match_status == 0)) %>%
   mutate_at(vars(starts_with("miss_")), list(pct = ~.*100/n)) %>%
   dplyr::select(la_name, match_status, n, starts_with("miss"))
-write_csv(unlinked,
-          "T:/Rachel Pearson/Projects/19-050 - CRIS-Cafcass analysis/Outputs/linkage paper/unlinked_dob_missing_core4.csv")  
-
 
 # by year and borough:  
 mhealth_prev_by_yr <- distinct(core4_cohort, new_person_id, la_name, case_fyear, .keep_all = TRUE) %>%  
@@ -132,9 +122,6 @@ mhealth_prev_by_yr <- distinct(core4_cohort, new_person_id, la_name, case_fyear,
          ul = ifelse(match_status == 1, (n + lag(ul, 1))*100/(n + lag(n,1)), ul),
          act = ifelse(match_status == 1, n*100/(n + lag(n,1)), NA),
          case_num = ifelse(match_status == 1, n + lag(n,1), NA)) 
-
-write_csv(mhealth_prev_by_yr,
-          "T:/Rachel Pearson/Projects/19-050 - CRIS-Cafcass analysis/Outputs/linkage paper/la_prevalence_plots.csv")  
 
 n_borough <- filter(mhealth_prev_by_yr, case_fyear >= 2007) %>%
   group_by(la_name) %>%
@@ -183,8 +170,6 @@ ggplot(aes(x = case_fyear, group = borough)) +
   guides(color = guide_legend(order = 1),
          linetype = guide_legend(order = 1),
          fill = guide_legend(order = 0))
-ggsave("T:/Rachel Pearson/Projects/19-050 - CRIS-Cafcass analysis/Outputs/linkage paper/la_prevalence_plots.png",
-       units = "mm", width = 275, height = 160, dpi = 900)
 
 
 #-----------------------------------------------------#
@@ -236,10 +221,7 @@ core4_cohort <- core4_cohort %>%
          any_co = as.factor(as.numeric(any(any_final_order_co_sao == 1))),
          any_po = as.factor(as.numeric(any(any_final_order_po == 1))),
          any_po_sgo = as.factor(as.numeric(any(any_final_order_co_sao == 1 |any_final_order_ro_sgo_cao == 1 | any_final_order_po == 1))),
-         any_sgo = as.factor(as.numeric(any(any_final_order_ro_sgo_cao == 1))),
-         ever_incarcerated = case_when(any(!is.na(address_is_incarcerated)) & any(address_is_incarcerated == 1) ~ "Yes",
-                                       any(!is.na(address_is_incarcerated)) & any(address_is_incarcerated == 1)==FALSE ~ "No",
-                                       any(!is.na(address_is_incarcerated)) == FALSE  ~ "missing")) %>%
+         any_sgo = as.factor(as.numeric(any(any_final_order_ro_sgo_cao == 1)))) %>%
   ungroup() %>%
   mutate(new_dedup_eth_cat = fct_relevel(as.factor(ifelse(!as.character(dedup_eth_cat) %in% c("white", "black or black british", "missing"),
                                                     "other", as.character(dedup_eth_cat))), c("white", "black or black british", "other", "missing")))
@@ -295,8 +277,6 @@ tab <- CreateTableOne(data = filter(core4_cohort, case_seq == 1),
 tab_overall <- left_join(strata_tab, tab,
                          by = c("rowname", "level"))
 
-write_csv(tab_overall, 
-          "T:/Rachel Pearson/Projects/19-050 - CRIS-Cafcass analysis/Outputs/linkage paper/baseline_table_core4.csv")
 
 #-----------------------------------------------------#
 # factors associated with linkage status ----
@@ -320,9 +300,6 @@ link_mod_summary <- tidy(link_mod, exponentiate = TRUE, conf.int = TRUE) %>%
             list(~round(., 5)))
 
 
-write_csv(link_mod_summary, "T:/Rachel Pearson/Projects/19-050 - CRIS-Cafcass analysis/Outputs/linkage paper/linkage_analysis_core4.csv")
-
-
 #--------------------------------#
 # sensitivity analysis model ----
 #--------------------------------#
@@ -335,9 +312,6 @@ sens2_link_mod_summary <- tidy(sens2_link_mod, exponentiate = TRUE, conf.int = T
   filter(row_number() != 1) %>%
   mutate_at(vars("estimate", "conf.low", "conf.high"),
             list(~round(., 5)))
-
-
-write_csv(sens2_link_mod_summary, "T:/Rachel Pearson/Projects/19-050 - CRIS-Cafcass analysis/Outputs/linkage paper/sensitivity_2_linkage_analysis_core4.csv")
 
 
 #-------------------------------#
@@ -357,9 +331,6 @@ term_levels <- c("new_first_age" = "Age at index set of proceedings",
                  "new_case_num_cat0" = "One (ref)",
                  "new_case_num_cat1" = "Two or more",
                  "first_case_fyear" = "Year (April-March) index set of proceedings began",
-                 #"new_has_postcode" = "Number of postcodes recorded in Cafcass",
-                 #"new_has_postcode0" = "None (ref)",
-                 #"new_has_postcode1" = "One or more",
                  'new_min_imd' = 'IMD 2010 quintile associated with\naddress at index set of proceedings',
                  'new_min_imd1' = "1 - most deprived (ref)",
                  'new_min_imd2' = "2",
@@ -367,15 +338,10 @@ term_levels <- c("new_first_age" = "Age at index set of proceedings",
                  'new_min_imd4' = "4 or 5 - least deprived",
                  'new_min_imdmissing' = "Address unknown",
                  "baby1" = "Had an infant subject to\nproceedings (ref = No)",
-                 #"baby0" = "No (ref)",
-                 #"baby1" = "Yes",
-                 "any_po_sgo1" = "Had at least one child subject to a care,\nplacement or special guardianship order (ref = No)")
-                 #"any_po_sgo0" = "No (ref)",
-                 #"any_po_sgo1" = "Yes")
+                 "any_po_sgo1" = "Had at least one child subject to a care,\nplacement or special guardianship order (ref = No)"))
 
 ord <- stack(term_levels) %>%
   rownames_to_column(var = "num")
-
 
 
 # data for plotting:
@@ -434,27 +400,12 @@ ggplot(data = get_levels, aes(x = estimate)) +
         axis.ticks.y = element_blank(),
         axis.line.y = element_blank()) 
 
-ggsave("T:/Rachel Pearson/Projects/19-050 - CRIS-Cafcass analysis/Outputs/linkage paper/linkage_analysis_plot.png",
-       units = "mm", width = 290, height = 270, dpi = 600)
 
 
-filter(full_cohort, case_seq == 1) %>%
-  group_by(CRIS_service) %>%
-  summarise(n = n()) %>%
-  ungroup %>%
-  mutate(pct = n*100/sum(n))
 
-filter(core4_cohort, case_seq == 1 & match_status == 1) %>%
-  group_by(CRIS_service) %>%
-  summarise(n = n()) %>%
-  ungroup %>%
-  mutate(pct = n*100/sum(n))
-
-
-#--------------------------------------#
-# Cafcass vs CRIS ethnicity and dob ----
-#--------------------------------------#
-library(ggalluvial)
+#-----------------------------------------------------#
+# Consistency of Cafcass vs CRIS ethnicity and dob ----
+#-----------------------------------------------------#
 
 eth_dob_dat <- read_xlsx("T:/Rachel Pearson/Projects/19-050 - CRIS-Cafcass analysis/Data/Cafcass cohort + match status/Cafcass_vs_CRIS_ethnicity_dob_all.xlsx",
                          na = c("NULL", "NA", "")) %>%
@@ -471,56 +422,19 @@ eth_dob_dat <- read_xlsx("T:/Rachel Pearson/Projects/19-050 - CRIS-Cafcass analy
                              !is.na(cafcass_dob) & !is.na(iapt_dob) & cafcass_dob == iapt_dob ~ "same",
                              is.na(cafcass_dob) ~ "missing"))
 
-dat_for_plot <- eth_dob_dat %>%
-  group_by(cafcass_ethnicity, cris_ethnicity) %>%
-  summarise(n = n()) %>%
-  ungroup() %>%
-  group_by(cafcass_ethnicity) %>%
-  mutate(pct = round(n*100/sum(n), 2)) %>%
-  ungroup()
   
   
-ggplot(dat_for_plot, 
-       aes(y = pct, axis1 = cafcass_ethnicity, axis2 = cris_ethnicity)) +
-  geom_alluvium(aes(fill = cris_ethnicity)) +
-  geom_stratum(width = 1/12, fill = "white", colour = "black") +
-  geom_label(stat = "stratum", infer.label = TRUE)
 
 eth_miss_tab <- filter(dat_for_plot, cafcass_ethnicity == "missing" | cafcass_ethnicity == cris_ethnicity) 
-write_csv(eth_miss_tab, "T:/Rachel Pearson/Projects/19-050 - CRIS-Cafcass analysis/Outputs/linkage paper/cris_vs_cafcass_ethnicity.csv") 
 
-
+# number with missing Cafcass dob and postcode:
 other_miss_tab <- filter(core4_cohort, case_seq == 1  & case_fyear >= 2007) %>%
   group_by(case_fyear) %>%
   summarise(miss_dob = sum(new_has_dob == 1)/n(),
             miss_dob_count = sum(new_has_dob == 1),
             miss_postcode = sum(new_has_postcode == 0)/n(),
             miss_postcode_count = sum(new_has_postcode == 0),
-            #miss_both_count = sum(new_has_dob == 1 & new_has_postcode == 0)/n(),
             n = n())
 
-ggplot(data = other_miss_tab, aes(x = as.factor(case_fyear))) +
-  geom_line(aes(y = round(miss_dob,2), colour = "date of birth", 
-                linetype = "date of birth", group = 1), size = 1) +
-  geom_line(aes(y = round(miss_postcode,2), colour = "at least one recorded postcode", 
-                linetype = "at least one recorded postcode", group = 1), size = 1) +
-  scale_colour_manual("", values = c("red", 
-                                     "blue")) +
-  scale_linetype_manual("", values = c("solid", 
-                                     "dotted")) +
-  xlab("\n Year (Apr-Mar) index set of proceedings began") +
-  scale_y_continuous("% missing  ", labels = scales::percent) +
-  theme_classic() +
-  theme(axis.text = element_text(size = 12),
-        axis.title.x = element_text(size = 13),
-        axis.title.y = element_text(size = 13, angle = 0, vjust = 0.5),
-        legend.text = element_text(size = 13),
-        legend.position = "top")
 
-ggsave("T:/Rachel Pearson/Projects/19-050 - CRIS-Cafcass analysis/Outputs/linkage paper/dob_postcode_missing_plot.png", dpi = 300)
-
-  CreateCatTable(strata = "case_fyear",
-                 vars = c("new_has_dob",
-                 "new_has_postcode")) %>%
-  print()
 
