@@ -320,7 +320,7 @@ from
 			select distinct
 			brcid
 			from
-			[SQLCRIS_User].[Rachel].[cafcass_master_linkage_table_after_excl_wout_dups]
+			[Rachel].[cafcass_master_linkage_table_after_excl_wout_dups]
 					cross apply
 			(values
 			('epjs', epjs),
@@ -330,7 +330,7 @@ from
 		) as a
 
 		left join
-		[SQLCRIS].[dbo].[event] as b
+		[event] as b
 		on 
 		a.brcid = b.brcid
 
